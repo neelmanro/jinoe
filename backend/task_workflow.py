@@ -753,6 +753,26 @@ def _start_editor_container(db: Session, project: Project, attempt: TaskAttempt,
     return attempt.editor_url or ""
 
 
+_NUMSTAT_RENAME_RE = re.compile(r"^(.*)\{(.*?) => (.*?)\}(.*)$")
+
+
+def _numstat_destination(path: str) -> str:
+    """Map a numstat path onto the destination path used by name-status and `diff --git`.
+
+    Git prints renames as `old => new` or `prefix/{old => new}suffix`. Both name-status
+    and the patch header identify the file by its destination, which is what the review
+    screen uses to open that file's diff.
+    """
+    if " => " not in path:
+        return path
+    brace = _NUMSTAT_RENAME_RE.fullmatch(path)
+    if brace is not None:
+        prefix, _old, new, suffix = brace.groups()
+        return f"{prefix}{new}{suffix}"
+    _old, new = path.split(" => ", 1)
+    return new
+
+
 def _changed_files_from_numstat(text: str, name_status: str) -> list[dict[str, Any]]:
     statuses: dict[str, str] = {}
     for line in name_status.splitlines():
@@ -764,7 +784,8 @@ def _changed_files_from_numstat(text: str, name_status: str) -> list[dict[str, A
         parts = line.split("\t")
         if len(parts) < 3:
             continue
-        adds_raw, dels_raw, path = parts[0], parts[1], parts[-1]
+        adds_raw, dels_raw, raw_path = parts[0], parts[1], parts[-1]
+        path = _numstat_destination(raw_path)
         additions = int(adds_raw) if adds_raw.isdigit() else 0
         deletions = int(dels_raw) if dels_raw.isdigit() else 0
         changed.append(

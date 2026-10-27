@@ -224,45 +224,38 @@ def _project_main_repo_path(project: Project) -> Path:
     return repo_path.resolve()
 
 
+def _reject_repo_path() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="That file path isn’t allowed.",
+    )
+
+
 def _safe_repo_child(repo_path: Path, rel_path: str) -> Path:
     """Resolve a repo-relative file path; reject traversal and `.git` directory access."""
     raw = (rel_path or "").strip().replace("\\", "/").strip("/")
     if not raw or "\x00" in raw:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="That file path isn’t allowed.",
-        )
+        _reject_repo_path()
 
     parts: list[str] = []
     for segment in raw.split("/"):
         if not segment or segment == ".":
             continue
-        if segment == "..":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="That file path isn’t allowed.",
-            )
-        if segment == ".git":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="That file path isn’t allowed.",
-            )
+        if segment == ".." or segment.lower() == ".git":
+            _reject_repo_path()
         parts.append(segment)
 
     if not parts:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="That file path isn’t allowed.",
-        )
+        _reject_repo_path()
 
-    clean = "/".join(parts)
-    target = (repo_path / clean).resolve()
+    root = repo_path.resolve()
+    target = (root / "/".join(parts)).resolve()
 
-    if repo_path != target and repo_path not in target.parents:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="That file path isn’t allowed.",
-        )
+    if root != target and root not in target.parents:
+        _reject_repo_path()
+
+    if any(part.lower() == ".git" for part in target.relative_to(root).parts):
+        _reject_repo_path()
 
     return target
 

@@ -168,6 +168,27 @@ uvicorn main:app --reload --port 8000
 
 Database tables are created on FastAPI startup via SQLAlchemy metadata. For production-grade deployments, add a migration tool such as Alembic before evolving schemas across environments.
 
+## Testing
+
+Backend unit tests cover four rules. They do not need Docker, Postgres, or a running API:
+
+- The assistant may run read-only Git inspection (`status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, `grep`, `blame`). Git writes are rejected, including `/bin/git`, quoted invocations, a write chained after a read, and a write hidden with a shell backslash.
+- Paths used by the assistant and paths used by the repository file API must stay inside the project. Traversal, null bytes, symlink escapes, and `.git` access are rejected.
+- `git diff --numstat` is joined with `--name-status` into the changed-file list an owner sees before approving work. Renames keep their destination path and similarity status. Binary files record zero line counts.
+- A workspace owner may work any task. A collaborator may work an unassigned task or their own assignment, and is refused someone else's task.
+
+From the backend environment:
+
+```bash
+cd backend
+source env/bin/activate
+python -m pytest
+```
+
+`pytest` is listed in `backend/requirements.txt`.
+
+These tests do not cover HTTP routes, authentication, database writes, Docker editor sessions, or the approve and decline merge. The Git check reads the command string; it is not a shell sandbox, so a substitution such as `$(which git) commit` is not detected. A command that only mentions a Git write, such as `echo git commit`, is rejected as well. Paths that Git C-quotes, including many non-ASCII names, are stored as Git prints them and are not unquoted.
+
 ## Project Status
 
 This is an active full-stack product prototype with real authentication, team/project/task data, Docker-backed editor sessions, AI-assisted task execution, review flows, and realtime chat. The codebase is suitable for demonstrating product engineering depth across frontend systems, backend API design, workflow orchestration, and applied AI tooling.

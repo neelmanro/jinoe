@@ -21,7 +21,12 @@ from .web_tools import TavilyClient
 
 SKIP_DIRS = frozenset({".git", ".next", ".turbo", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"})
 READ_ONLY_GIT = frozenset({"status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame"})
-GIT_COMMAND_RE = re.compile(r"(?:^|[;&|()\s])(?:command\s+)?(?:/usr/bin/)?git\s+([a-zA-Z-]+)", re.IGNORECASE)
+# A git binary, optionally quoted or path-qualified (`/bin/git`, `command git`), and its first argument.
+# This inspects the command text `sh -lc` will see. It is not a shell parser.
+_GIT_INVOCATION_RE = re.compile(
+    r"(?:^|[\s;|&()`])(?:command\s+)?['\"]?(?:[^\s'\";&|()`]*/)?git['\"]?\s+['\"]?([a-zA-Z-][a-zA-Z0-9-]*)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -389,20 +394,24 @@ def fail(message):
 
 
 def safe_path(raw, allow_root=False, require_file_shape=False):
+    root = ROOT.resolve(strict=False)
     cleaned = str(raw or "").strip().replace("\\", "/")
     if "\x00" in cleaned or cleaned.startswith("/"):
         raise ValueError("Path must stay inside the workspace.")
     if not cleaned or cleaned == ".":
         if not allow_root:
             raise ValueError("A file path is required.")
-        return ROOT
+        return root
     if any(part == ".." for part in cleaned.split("/")):
         raise ValueError("Path traversal is not allowed.")
     if require_file_shape and cleaned.endswith("/"):
         raise ValueError("A file path is required, not a directory path.")
-    target = (ROOT / cleaned).resolve(strict=False)
-    target.relative_to(ROOT)
-    if ".git" in target.relative_to(ROOT).parts:
+    target = (root / cleaned).resolve(strict=False)
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Path escapes the workspace.") from exc
+    if any(part.lower() == ".git" for part in relative.parts):
         raise ValueError("Direct .git access is not allowed.")
     return target
 
@@ -592,6 +601,7 @@ def _workspace_root(context: ToolContext) -> Path:
 
 
 def _safe_path(root: Path, raw: str, *, allow_root: bool = False, require_file_shape: bool = False) -> Path:
+    root = root.resolve(strict=False)
     cleaned = raw.strip().replace("\\", "/")
     if "\x00" in cleaned or cleaned.startswith("/"):
         raise ValueError("Path must stay inside the workspace.")
@@ -605,10 +615,10 @@ def _safe_path(root: Path, raw: str, *, allow_root: bool = False, require_file_s
         raise ValueError("A file path is required, not a directory path.")
     target = (root / cleaned).resolve(strict=False)
     try:
-        target.relative_to(root)
+        relative = target.relative_to(root)
     except ValueError as exc:
         raise ValueError("Path escapes the workspace.") from exc
-    if any(part == ".git" for part in target.relative_to(root).parts):
+    if any(part.lower() == ".git" for part in relative.parts):
         raise ValueError("Direct .git access is not allowed.")
     return target
 
@@ -627,8 +637,24 @@ def _bounded_int(raw: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _shell_unescape(command: str) -> str:
+    """Undo the backslash escapes `sh -lc` applies, including line continuations."""
+    chars: list[str] = []
+    index = 0
+    while index < len(command):
+        if command[index] == "\\" and index + 1 < len(command):
+            if command[index + 1] != "\n":
+                chars.append(command[index + 1])
+            index += 2
+            continue
+        chars.append(command[index])
+        index += 1
+    return "".join(chars)
+
+
 def _assert_safe_git_command(command: str) -> None:
-    for match in GIT_COMMAND_RE.finditer(command):
+    visible = _shell_unescape(command)
+    for match in _GIT_INVOCATION_RE.finditer(visible):
         subcommand = match.group(1).lower()
         if subcommand not in READ_ONLY_GIT:
             raise ValueError(
